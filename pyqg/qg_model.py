@@ -100,10 +100,11 @@ class QGModel(qg_diagnostics.QGDiagnostics):
         super().__init__(nz=2, **kwargs)
 
         # initial conditions: (PV anomalies)
-        self.set_q1q2(
-            1e-7*np.random.rand(self.ny,self.nx) + 1e-6*(
-                np.ones((self.ny,1)) * np.random.rand(1,self.nx) ),
-                np.zeros_like(self.x) )
+        self.set_q1q2(self.gaussian_field(), 0*self.x)
+        #self.set_q1q2(
+        #    1e-7*np.random.rand(self.ny,self.nx) + 1e-6*(
+        #        np.ones((self.ny,1)) * np.random.rand(1,self.nx) ),
+        #        np.zeros_like(self.x) )
 
     ### PRIVATE METHODS - not meant to be called by user ###
 
@@ -262,4 +263,44 @@ class QGModel(qg_diagnostics.QGDiagnostics):
             dims=('time',)
        )
 
+    def gaussian_field(self, scale=50000, std=5e-7):
+        '''
+        This field has zero mean over domain 
+        (contrary to default initial conditions).
+        Mean values is kernel of the gov. equations and 
+        need not to be removed.
+        Additionally, this field is grid-independent, i.e.
+        discretizes the same gaussian process on any grid
 
+        scale - spatial scale of gaussian noise given in [metres]
+        std - standard diviation of PV in [1/s]
+
+        Output is 1d numpy field in real space
+
+        Definition of scale:
+        Let definition of autocorrelation function 
+        (https://stats.stackexchange.com/questions/445484/
+        does-length-scale-of-the-kernel-in-gaussian-process-directly-relates-to-correlat):
+        rho(x,x') = exp(-1/2*(x-x')^2/scale^2)
+        which has power spectrum proportional to:
+        ~ exp(-1/2 * scale^2 * k^2)
+        and Fourier amplitude:
+        ~ exp(-1/4 * scale^2 * k^2)
+        '''
+        noise = (np.random.randn(*self.k.shape) + 1j * np.random.randn(*self.k.shape)) / np.sqrt(2)
+        noise = noise * np.exp(-0.25 * scale**2 * self.wv2)
+
+        # Remove 2h harmonics which are not invertible
+        n = self.nx // 2
+        noise[n,0] = 0
+        noise[:,n] = 0
+        # Remove constant
+        noise[0,0] = 0
+
+        # Note:
+        # var_spatial = 1 = 1/M^2 * L * W / (2*pi)^2 * alpha^2 * int(2*|noise|^2*pi*kr, dkr)
+        # alpha - coefficient to multiply
+        # int(exp(-1/2 * scale^2 * k^2) * 2*pi*k, dk) = 2*pi/scale^2
+        noise = noise * np.sqrt(2*np.pi) * scale * self.M / self.L
+
+        return np.fft.irfftn(noise) * std
