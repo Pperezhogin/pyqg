@@ -66,6 +66,7 @@ class QGModel(qg_diagnostics.QGDiagnostics):
         H1 = 500,                   # depth of layer 1 (H1)
         U1=0.025,                   # upper layer flow
         U2=0.0,                     # lower layer flow
+        IC='Default_scaled',        # initial condition: 'Default', 'Gauss', 'Default_scaled'
         **kwargs
         ):
         """
@@ -100,11 +101,29 @@ class QGModel(qg_diagnostics.QGDiagnostics):
         super().__init__(nz=2, **kwargs)
 
         # initial conditions: (PV anomalies)
-        self.set_q1q2(self.gaussian_field(), 0*self.x)
-        #self.set_q1q2(
-        #    1e-7*np.random.rand(self.ny,self.nx) + 1e-6*(
-        #        np.ones((self.ny,1)) * np.random.rand(1,self.nx) ),
-        #        np.zeros_like(self.x) )
+        if IC == 'Gauss':
+            self.set_q1q2(self.gaussian_field(), 0*self.x)
+        elif IC == 'Default':
+            self.set_q1q2(
+                1e-7*np.random.rand(self.ny,self.nx) + 1e-6*(
+                    np.ones((self.ny,1)) * np.random.rand(1,self.nx) ),
+                    np.zeros_like(self.x) )
+        elif IC == 'Default_scaled':
+            q2d = 1e-7*np.random.rand(self.ny,self.nx)
+            q2d -= q2d.mean(axis=(-2,-1), keepdims=True)
+            # Scale noise as discretization to 2D white noise (~1/sqrt(dt) for 1d Wiener process) 
+            # Disturbance for 64^2 grid is not changed
+            q2d *= np.sqrt(self.nx * self.ny / 64**2)
+            q1d = 1e-6*(np.ones((self.ny,1)) * np.random.rand(1,self.nx))
+            q1d -= q1d.mean(axis=(-2,-1), keepdims=True)
+            q1d *= np.sqrt(self.nx / 64)
+            noise = q1d+q2d
+            # Retain only large waves (correspondsing to 32^2 model)
+            Xf = np.fft.rfftn(noise)
+            noise = np.fft.irfftn(Xf * (self.wv < np.pi / (self.L/32)))
+            self.set_q1q2(noise, 0*self.x)
+        else:
+            raise ValueError('Unknown IC')
 
     ### PRIVATE METHODS - not meant to be called by user ###
 
