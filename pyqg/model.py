@@ -271,7 +271,11 @@ class Model(PseudoSpectralKernel):
 
         tsnapints = np.ceil(tsnapint/self.dt)
 
+        self.cfl_large = False
         while(self.t < self.tmax):
+            if self.cfl_large:
+                self.logger.info('Warning: CFL>1. Computations are stopped.')
+                break
             self._step_forward()
             if self.t>=tsnapstart and (self.tc%tsnapints)==0:
                 yield self.t
@@ -571,7 +575,8 @@ class Model(PseudoSpectralKernel):
             self.logger.info('Step: %i, Time: %3.2e, KE: %3.2e, CFL: %4.3f'
                     , self.tc,self.t,self.ke,self.cfl )
 
-            assert self.cfl<1., self.logger.error('CFL condition violated')
+            self.cfl_large = self.cfl>1.
+            #assert self.cfl<1., self.logger.error('CFL condition violated')
 
 
     def _calc_diagnostics(self):
