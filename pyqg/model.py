@@ -572,8 +572,8 @@ class Model(PseudoSpectralKernel):
             self.cfl = self._calc_cfl()
             #print 't=%16d, tc=%10d: cfl=%5.6f, ke=%9.9f' % (
             #       self.t, self.tc, cfl, ke)
-            self.logger.info('Step: %i, Time: %3.2e, KE: %3.2e, CFL: %4.3f'
-                    , self.tc,self.t,self.ke,self.cfl )
+            self.logger.info('Step: %i, Time years: %4.1f, KE: %3.2e, CFL: %4.3f'
+                    , self.tc,self.t / (86400*360),self.ke,self.cfl )
 
             self.cfl_large = self.cfl>1.
             #assert self.cfl<1., self.logger.error('CFL condition violated')
