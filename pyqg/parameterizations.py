@@ -199,6 +199,13 @@ class BackscatterBiharmonic(QParameterization):
 
     .. _Jansen and Held 2014: https://doi.org/10.1016/j.ocemod.2014.06.002
     .. _Jansen et al. 2015: https://doi.org/10.1016/j.ocemod.2015.05.007
+
+    Pareto-optimal on jet config:
+    smag_constant=sqrt(0.005)
+    back_constant=0.8
+    Pareto-optimal on eddy config:
+    smag_constant=sqrt(0.007)
+    back_constant=1.2
     """
 
     def __init__(self, smag_constant=0.08, back_constant=0.99, eps=1e-32):
@@ -286,3 +293,147 @@ class ZannaBolton2020(UVParameterization):
 
     def __repr__(self):
         return f"ZannaBolton2020(κ={self.constant:.2e})"
+
+class ZannaBolton2020_q(QParameterization):
+    """
+    Same as ZannaBolton2020, but q forcing (good for offline analysis)
+    """
+    def __init__(self, constant=-46761284):
+        self.ZB2020 = ZannaBolton2020(constant)
+
+    def __call__(self, m):
+        du, dv = self.ZB2020(m)
+        return m.ifft(-m.il * m.fft(du) + m.ik * m.fft(dv))
+
+def Gaussian_Filter(w, m, FGR):
+    w_fft = m.fft(w)
+    Delta = m.dx * FGR
+    k2 = m.k**2 + m.l**2
+    G = np.exp(-k2*Delta**2/24)
+    return m.ifft(G * w_fft)
+
+def deconvolve(w, m, FGR, order):
+    w_fft = m.fft(w)
+    Delta = m.dx * FGR
+    k2 = m.k**2 + m.l**2
+    G = np.exp(-k2*Delta**2/24)
+
+    r = w_fft
+    for j in range(order):
+        r = r - G * r
+        w_fft = w_fft + r
+    return m.ifft(w_fft)
+
+def SFS(q, u, v, m, FGR):
+    qf = Gaussian_Filter(q, m, FGR)
+    uf = Gaussian_Filter(u, m, FGR)
+    vf = Gaussian_Filter(v, m, FGR)
+    quf = Gaussian_Filter(q*u, m, FGR)
+    qvf = Gaussian_Filter(q*v, m, FGR)
+    SFSu = qf*uf - quf
+    SFSv = qf*vf - qvf
+    return SFSu, SFSv
+
+class ADM(QParameterization):
+    def __init__(self, FGR=2, order=5):
+        self.FGR = FGR
+        self.order = order   
+
+    def __call__(self, m):
+        qd = deconvolve(m.q, m, self.FGR, self.order)
+        ud = deconvolve(m.u, m, self.FGR, self.order)
+        vd = deconvolve(m.v, m, self.FGR, self.order)
+
+        SFSu, SFSv = SFS(qd, ud, vd, m, self.FGR)
+
+        ik = m.k * 1j
+        il = m.l * 1j
+
+        real = lambda q: q if q.shape == m.q.shape else m.ifft(q)
+        spec = lambda q: q if q.shape != m.q.shape else m.fft(q)
+        ddx = lambda q: real(ik * spec(q))
+        ddy = lambda q: real(il * spec(q))
+
+        return ddx(SFSu) + ddy(SFSv)
+
+    def __repr__(self):
+        return f'ADM, FGR={self.FGR}, order={self.order}'
+
+class Reynolds_stress(QParameterization):
+    def __init__(self, FGR=2, Csim=12):
+        self.FGR = FGR
+        self.Csim = Csim 
+    
+    def __call__(self, m):
+        qr = m.q - Gaussian_Filter(m.q, m, self.FGR)
+        ur = m.u - Gaussian_Filter(m.u, m, self.FGR)
+        vr = m.v - Gaussian_Filter(m.v, m, self.FGR)
+        
+        SFSu, SFSv = SFS(qr, ur, vr, m, self.FGR)
+        
+        ik = m.k * 1j
+        il = m.l * 1j
+        
+        real = lambda q: q if q.shape == m.q.shape else m.ifft(q)
+        spec = lambda q: q if q.shape != m.q.shape else m.fft(q)
+        ddx = lambda q: real(ik * spec(q))
+        ddy = lambda q: real(il * spec(q))
+        
+        return self.Csim*(ddx(SFSu) + ddy(SFSv))
+
+    def __repr__(self):
+        return f'Reynolds, FGR={self.FGR}, Csim={self.Csim}'
+
+class HybridSymbolic(QParameterization):
+    def __init__(self, weights=None):
+        if weights is None:
+            self.weights = np.array([
+                [ 1.4077349573135765e+07,  1.9300721349777748e+15,
+                  2.3311494532833229e+22,  1.1828024430000000e+09,
+                  1.1410567621344224e+17, -6.7029178551956909e+10,
+                  8.9901990193476257e+10],
+                [ 5.196460289865505e+06,  7.031351150824246e+14,
+                  1.130130768679029e+11,  8.654265196250000e+08,
+                  7.496556547888773e+16, -8.300923156070618e+11,
+                  9.790139405295905e+11]
+            ]).T[:,:,np.newaxis,np.newaxis]
+        else:
+            self.weights = weights
+
+    def extract_features(self, m):
+        # Define some helper functions for taking spectral differential
+        # operations with as few FFTs/IFFTs as possible
+        ik = m.k * 1j
+        il = m.l * 1j
+        real = lambda q: q if q.shape == m.q.shape else m.ifft(q)
+        spec = lambda q: q if q.shape != m.q.shape else m.fft(q)
+        ddx = lambda q: ik * spec(q)
+        ddy = lambda q: il * spec(q)    
+        laplacian = lambda q: (ik**2 + il**2) * spec(q)
+        adv_real = lambda qr: ddx(m.ufull * qr) + ddy(m.vfull * qr)
+        advect = lambda q: adv_real(real(q))
+
+        # Compute basis features
+        lap1_adv_q = laplacian(advect(m.q))
+        lap2_adv_q = laplacian(lap1_adv_q)
+        lap3_adv_q = laplacian(lap2_adv_q)
+        lap2_q = laplacian(laplacian(m.q))
+        lap3_q = laplacian(lap2_q)
+
+        return np.array([
+            real(feature) for feature in [ # convert them to real space
+                lap1_adv_q,
+                lap2_adv_q,
+                lap3_adv_q,
+                lap2_q,
+                lap3_q,
+                advect(advect(ddx(laplacian(m.v)))),
+                advect(advect(ddy(laplacian(m.u)))),
+            ]
+        ])
+
+    def __call__(self, m):
+        return (self.weights * self.extract_features(m)).sum(axis=0)
+
+    def __repr__(self):
+        return 'HybridSymbolic'
