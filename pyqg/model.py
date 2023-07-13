@@ -133,6 +133,7 @@ class Model(PseudoSpectralKernel):
         log_level = 1,                 # logger level: from 0 for quiet (no log) to 4 for verbose
                                        #     logger (see  https://docs.python.org/2/library/logging.html)
         logfile = None,                # logfile; None prints to screen
+        dealiasing='None'               # use 2/3 or 3/2 dealiasing rule or None (i.e. exponential filter)
         ):
         """
         .. note:: All of the test cases use ``nx==ny``. Expect bugs if you choose
@@ -210,6 +211,8 @@ class Model(PseudoSpectralKernel):
                 q_parameterization = parameterization
             else:
                 raise ValueError(f"unknown parameterization type {ptype}")
+        
+        self.dealiasing = dealiasing
 
         # TODO: be more clear about what attributes are cython and what
         # attributes are python
@@ -271,12 +274,11 @@ class Model(PseudoSpectralKernel):
 
         tsnapints = np.ceil(tsnapint/self.dt)
 
-        self.cfl_large = False
         while(self.t < self.tmax):
-            if self.cfl_large:
+            self._step_forward()
+            if self.cfl>1.:
                 self.logger.info('Warning: CFL>1. Computations are stopped.')
                 break
-            self._step_forward()
             if self.t>=tsnapstart and (self.tc%tsnapints)==0:
                 yield self.t
         return
@@ -412,8 +414,12 @@ class Model(PseudoSpectralKernel):
         self._invert()
         # find streamfunction from pv
 
-        self._do_advection()
-        # use streamfunction to calculate advection tendency
+            # use streamfunction to calculate advection tendency
+        if self.dealiasing == '3/2-rule':
+            self.dqhdt = self._do_background_flow() + \
+            self._do_advection_anomaly_dealiasing()
+        elif self.dealiasing in ['None', '2/3-rule']:
+            self._do_advection()
 
         self._do_friction()
         # apply friction
@@ -500,11 +506,27 @@ class Model(PseudoSpectralKernel):
     def _initialize_filter(self):
         """Set up frictional filter."""
         # this defines the spectral filter (following Arbic and Flierl, 2003)
-        cphi=0.65*pi
-        wvx=np.sqrt((self.k*self.dx)**2.+(self.l*self.dy)**2.)
-        filtr = np.exp(-self.filterfac*(wvx-cphi)**4.)
-        filtr[wvx<=cphi] = 1.
-        self.filtr = filtr
+        if self.dealiasing == '3/2-rule':
+            filtr = np.ones_like(self.wv2)
+            n = self.nx // 2
+            filtr[n,0] = 0
+            filtr[:,n] = 0
+            self.filtr = filtr
+        elif self.dealiasing == 'None':
+            cphi=0.65*pi
+            wvx=np.sqrt((self.k*self.dx)**2.+(self.l*self.dy)**2.)
+            filtr = np.exp(-self.filterfac*(wvx-cphi)**4.)
+            filtr[wvx<=cphi] = 1.
+            self.filtr = filtr
+        elif self.dealiasing == '2/3-rule':
+            filtr = np.zeros_like(self.wv2)
+            n = self.nx // 3
+            filtr[:n,:n] = 1
+            filtr[-n:,:n] = 1
+            self.filtr = filtr
+        else:
+            raise ValueError(
+                "dealiasing must be '3/2-rule', '2/3-rule', or 'None'")
 
     def _filter(self, q):
         return self.filtr * q
@@ -537,7 +559,48 @@ class Model(PseudoSpectralKernel):
 
         self.logger.info(' Logger initialized')
 
+    def _do_background_flow(self):
+        '''
+        Linear part of PV advection
+        involving the mean flow
+        '''
+        return - (
+            self.ik * self.qh * self.Ubg[:,np.newaxis,np.newaxis] +
+            self.ikQy * self.ph
+        )
+    
+    def _do_advection_anomaly(self):
+        '''
+        Quadratic part of PV advection
+        involving only anomalies
+        '''
+        uq = self.u*self.q
+        vq = self.v*self.q
 
+        uqh = self.fft(uq)
+        vqh = self.fft(vq)
+
+        return - (self.ik*uqh + 
+                  self.il*vqh)
+    
+    def _do_advection_anomaly_dealiasing(self):
+        '''
+        Apply 3/2 dealiasing rule
+        '''
+        n = self.nx
+        N = int((n*3)//2)
+        _q = fft_interpolate(self.q, n, N)
+        _u = fft_interpolate(self.u, n, N)
+        _v = fft_interpolate(self.v, n, N)
+        uq = fft_interpolate(_u*_q, N, n)
+        vq = fft_interpolate(_v*_q, N, n)
+        
+        uqh = self.fft(uq)
+        vqh = self.fft(vq)
+
+        return - (self.ik*uqh + 
+                  self.il*vqh)
+   
     # compute advection in grid space (returns qdot in fourier space)
     # *** don't remove! needed for diagnostics (but not forward model) ***
     def _advect(self, q, u=None, v=None):
@@ -567,16 +630,11 @@ class Model(PseudoSpectralKernel):
 
     def _print_status(self):
         """Output some basic stats."""
+        self.cfl = self._calc_cfl()
         if (self.log_level) and ((self.tc % self.twrite)==0):
             self.ke = self._calc_ke()
-            self.cfl = self._calc_cfl()
-            #print 't=%16d, tc=%10d: cfl=%5.6f, ke=%9.9f' % (
-            #       self.t, self.tc, cfl, ke)
             self.logger.info('Step: %i, Time years: %4.1f, KE: %3.2e, CFL: %4.3f'
                     , self.tc,self.t / (86400*360),self.ke,self.cfl )
-
-            self.cfl_large = self.cfl>1.
-            #assert self.cfl<1., self.logger.error('CFL condition violated')
 
 
     def _calc_diagnostics(self):
@@ -865,3 +923,40 @@ class Model(PseudoSpectralKernel):
             warnings.warn("Model has multiple parameterizations, "\
                           "but only returning PV")
         return self.q_parameterization or self.uv_parameterization
+
+def fft_interpolate(x, n, N, truncate_2h=True):
+    if x.shape[-2] != n or x.shape[-1] != n:
+        raise ValueError('Input variable must be n*n points')
+    if n%2 != 0 or N%2 != 0:
+        raise ValueError('Grid sizes (n,N) must be even')
+    
+    if len(x.shape) == 2:
+        Xf = np.zeros((N,N//2+1), dtype='complex128')
+    elif len(x.shape) == 3:
+        Xf = np.zeros((x.shape[0],N,N//2+1), dtype='complex128')
+    
+    nn = min(n//2,N//2)
+    
+    xf = np.fft.rfftn(x, axes=(-2,-1))
+    
+    if truncate_2h:
+        if len(x.shape) == 2:
+            xf[nn,0] = 0
+        elif len(x.shape) == 3:
+            xf[:,nn,0] = 0
+
+    if len(x.shape) == 2:
+        Xf[:nn,:nn+1]  = xf[:nn,:nn+1]
+        Xf[-nn:,:nn+1] = xf[-nn:,:nn+1]
+    elif len(x.shape) == 3:
+        Xf[:,:nn,:nn+1]  = xf[:,:nn,:nn+1]
+        Xf[:,-nn:,:nn+1] = xf[:,-nn:,:nn+1]
+        
+    if truncate_2h:
+        if len(x.shape) == 2:
+            Xf[nn,0] = 0
+            Xf[:,nn] = 0
+        elif len(x.shape) == 3:
+            Xf[:,nn,0] = 0
+            Xf[:,:,nn] = 0
+    return np.fft.irfftn(Xf, axes=(-2,-1)) * (N/n)**2
