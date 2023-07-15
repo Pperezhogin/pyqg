@@ -416,10 +416,12 @@ class Model(PseudoSpectralKernel):
 
             # use streamfunction to calculate advection tendency
         if self.dealiasing == '3/2-rule':
-            self.dqhdt = self._do_background_flow() + \
-            self._do_advection_anomaly_dealiasing()
+            self.dqhdt = - self._advect(self.q) - self._do_background_flow()
         elif self.dealiasing in ['None', '2/3-rule']:
             self._do_advection()
+        else:
+            raise ValueError(
+                "dealiasing must be '3/2-rule', '2/3-rule', or 'None'")
 
         self._do_friction()
         # apply friction
@@ -564,42 +566,10 @@ class Model(PseudoSpectralKernel):
         Linear part of PV advection
         involving the mean flow
         '''
-        return - (
+        return (
             self.ik * self.qh * self.Ubg[:,np.newaxis,np.newaxis] +
             self.ikQy * self.ph
         )
-    
-    def _do_advection_anomaly(self):
-        '''
-        Quadratic part of PV advection
-        involving only anomalies
-        '''
-        uq = self.u*self.q
-        vq = self.v*self.q
-
-        uqh = self.fft(uq)
-        vqh = self.fft(vq)
-
-        return - (self.ik*uqh + 
-                  self.il*vqh)
-    
-    def _do_advection_anomaly_dealiasing(self):
-        '''
-        Apply 3/2 dealiasing rule
-        '''
-        n = self.nx
-        N = int((n*3)//2)
-        _q = fft_interpolate(self.q, n, N)
-        _u = fft_interpolate(self.u, n, N)
-        _v = fft_interpolate(self.v, n, N)
-        uq = fft_interpolate(_u*_q, N, n)
-        vq = fft_interpolate(_v*_q, N, n)
-        
-        uqh = self.fft(uq)
-        vqh = self.fft(vq)
-
-        return - (self.ik*uqh + 
-                  self.il*vqh)
    
     # compute advection in grid space (returns qdot in fourier space)
     # *** don't remove! needed for diagnostics (but not forward model) ***
@@ -610,8 +580,22 @@ class Model(PseudoSpectralKernel):
             u = self.u
         if v is None:
             v = self.v
-        uq = u*q
-        vq = v*q
+        
+        if self.dealiasing == '3/2-rule':
+            n = self.nx
+            N = int((n*3)//2)
+            _q = fft_interpolate(q, n, N)
+            _u = fft_interpolate(u, n, N)
+            _v = fft_interpolate(v, n, N)
+            uq = fft_interpolate(_u*_q, N, n)
+            vq = fft_interpolate(_v*_q, N, n)
+        elif self.dealiasing in ['None', '2/3-rule']:
+            uq = u*q
+            vq = v*q
+        else:
+            raise ValueError(
+                "dealiasing must be '3/2-rule', '2/3-rule', or 'None'")
+
         # this is a hack, since fft now requires input to have shape (nz,ny,nx)
         # it does an extra unnecessary fft
         is_2d = (uq.ndim==2)
