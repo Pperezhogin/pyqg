@@ -123,7 +123,7 @@ cdef class PseudoSpectralKernel:
         self.ny = ny
         self.nx = nx
         self.nl = ny
-        self.nk = nx/2 + 1
+        self.nk = nx//2 + 1
         self.a = np.zeros((self.nz, self.nz, self.nl, self.nk), DTYPE_com)
         self.kk = np.zeros((self.nk), DTYPE_real)
         self._ik = np.zeros((self.nk), DTYPE_com)
@@ -203,7 +203,7 @@ cdef class PseudoSpectralKernel:
 
         # for threading
         self.num_threads = fftw_num_threads
-        self.chunksize = self.nl/self.num_threads
+        self.chunksize = self.nl//self.num_threads
 
         IF PYQG_USE_PYFFTW:
             # set up FFT plans

@@ -360,7 +360,7 @@ class ADM(QParameterization):
         return f'ADM, FGR={self.FGR}, order={self.order}'
 
 class Reynolds_stress(QParameterization):
-    def __init__(self, FGR=2, Csim=12):
+    def __init__(self, FGR=2, Csim=7):
         self.FGR = FGR
         self.Csim = Csim 
     
@@ -383,6 +383,18 @@ class Reynolds_stress(QParameterization):
 
     def __repr__(self):
         return f'Reynolds, FGR={self.FGR}, Csim={self.Csim}'
+    
+class Cross_stress(QParameterization):
+    def __init__(self, FGR=2, Csim=1):
+        self.FGR = FGR
+        self.Csim = Csim
+        self.SSM = ADM(FGR=self.FGR,order=0)
+        self.ADM = ADM(FGR=self.FGR,order=1)
+        self.Rey = Reynolds_stress(FGR=self.FGR,Csim=1)
+
+    def __call__(self, m):
+        cross = self.ADM(m) - self.SSM(m) - self.Rey(m)
+        return self.Csim * cross
 
 class HybridSymbolic(QParameterization):
     def __init__(self, weights=None):
